@@ -122,6 +122,57 @@
 
       {
         "type": "png",
+        "name": "IMAGE_BATTERY_0",
+        "file": "images/battery_0.png"
+      },
+      {
+        "type": "png",
+        "name": "IMAGE_BATTERY_1",
+        "file": "images/battery_1.png"
+      },
+      {
+        "type": "png",
+        "name": "IMAGE_BATTERY_2",
+        "file": "images/battery_2.png"
+      },
+      {
+        "type": "png",
+        "name": "IMAGE_BATTERY_3",
+        "file": "images/battery_3.png"
+      },
+      {
+        "type": "png",
+        "name": "IMAGE_BATTERY_4",
+        "file": "images/battery_4.png"
+      },
+      {
+        "type": "png",
+        "name": "IMAGE_BATTERY_5",
+        "file": "images/battery_5.png"
+      },
+      {
+        "type": "png",
+        "name": "IMAGE_BATTERY_6",
+        "file": "images/battery_6.png"
+      },
+      {
+        "type": "png",
+        "name": "IMAGE_BATTERY_7",
+        "file": "images/battery_7.png"
+      },
+      {
+        "type": "png",
+        "name": "IMAGE_BATTERY_8",
+        "file": "images/battery_8.png"
+      },
+      {
+        "type": "png",
+        "name": "IMAGE_BATTERY_9",
+        "file": "images/battery_9.png"
+      },
+
+      {
+        "type": "png",
         "name": "IMAGE_DAY_0",
         "file": "images/day_0.png"
       },

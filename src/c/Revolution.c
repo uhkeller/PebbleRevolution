@@ -27,6 +27,10 @@
 #define DATE_IMAGE_WIDTH    25
 #define DATE_IMAGE_HEIGHT   25
 
+// Battery percentage digit images
+#define BATTERY_IMAGE_WIDTH  15
+#define BATTERY_IMAGE_HEIGHT 15
+
 // Day-of-week label images (scaled 1.5× from original 20×10)
 #define DAY_IMAGE_WIDTH     30
 #define DAY_IMAGE_HEIGHT    15
@@ -51,6 +55,14 @@ const int DATE_IMAGE_RESOURCE_IDS[NUMBER_OF_DATE_IMAGES] = {
   RESOURCE_ID_IMAGE_DATE_1, RESOURCE_ID_IMAGE_DATE_2, RESOURCE_ID_IMAGE_DATE_3,
   RESOURCE_ID_IMAGE_DATE_4, RESOURCE_ID_IMAGE_DATE_5, RESOURCE_ID_IMAGE_DATE_6,
   RESOURCE_ID_IMAGE_DATE_7, RESOURCE_ID_IMAGE_DATE_8, RESOURCE_ID_IMAGE_DATE_9
+};
+
+#define NUMBER_OF_BATTERY_IMAGES 10
+const int BATTERY_IMAGE_RESOURCE_IDS[NUMBER_OF_BATTERY_IMAGES] = {
+  RESOURCE_ID_IMAGE_BATTERY_0,
+  RESOURCE_ID_IMAGE_BATTERY_1, RESOURCE_ID_IMAGE_BATTERY_2, RESOURCE_ID_IMAGE_BATTERY_3,
+  RESOURCE_ID_IMAGE_BATTERY_4, RESOURCE_ID_IMAGE_BATTERY_5, RESOURCE_ID_IMAGE_BATTERY_6,
+  RESOURCE_ID_IMAGE_BATTERY_7, RESOURCE_ID_IMAGE_BATTERY_8, RESOURCE_ID_IMAGE_BATTERY_9
 };
 
 #define NUMBER_OF_DAY_IMAGES 7
@@ -103,8 +115,11 @@ static DayItem day_item;
 static Layer *date_layer;
 static Slot date_slots[NUMBER_OF_DATE_SLOTS];
 
-// Bluetooth icon
-static Layer *bt_icon_layer;
+// Battery
+#define NUMBER_OF_BATTERY_SLOTS 2
+static Layer *battery_layer;
+static Slot battery_slots[NUMBER_OF_BATTERY_SLOTS];
+static int s_battery_percent;
 
 // State
 static bool s_bt_connected;
@@ -135,13 +150,17 @@ void display_date(struct tm *tick_time);
 void display_date_value(int value, int part_number);
 void update_date_slot(Slot *date_slot, int digit_value);
 
+// Battery
+void display_battery(int percent);
+void update_battery_slot(Slot *battery_slot, int digit_value);
+void handle_battery_change(BatteryChargeState state);
+
 // State / Color
 GColor get_fg_color();
 void tint_bitmap(GBitmap *bitmap);
 void refresh_images();
 
-// Bluetooth icon
-void bt_icon_layer_update_proc(Layer *layer, GContext *ctx);
+// Connection
 void handle_bt_connection_change(bool connected);
 
 // Handlers
@@ -420,7 +439,9 @@ void update_date_slot(Slot *date_slot, int digit_value) {
 
 // State / Color
 GColor get_fg_color() {
-  return (s_bt_connected && !s_quiet_mode) ? GColorWhite : GColorMelon;
+  if (!s_bt_connected) return GColorRed;
+  if (s_quiet_mode)    return GColorYellow;
+  return GColorWhite;
 }
 
 void tint_bitmap(GBitmap *bitmap) {
@@ -467,25 +488,46 @@ void refresh_images() {
     time_t now = time(NULL);
     display_day(localtime(&now));
   }
-  if (bt_icon_layer) {
-    layer_mark_dirty(bt_icon_layer);
+  for (int i = 0; i < NUMBER_OF_BATTERY_SLOTS; i++) {
+    int digit = battery_slots[i].state;
+    if (digit != EMPTY_SLOT) {
+      unload_digit_image_from_slot(&battery_slots[i]);
+      update_battery_slot(&battery_slots[i], digit);
+    }
   }
 }
 
-// Bluetooth icon
-void bt_icon_layer_update_proc(Layer *layer, GContext *ctx) {
-  if (s_bt_connected) return;
-  GRect bounds = layer_get_bounds(layer);
-  graphics_context_set_stroke_color(ctx, get_fg_color());
-  graphics_context_set_stroke_width(ctx, 2);
-  graphics_draw_line(ctx,
-    GPoint(1, 1),
-    GPoint(bounds.size.w - 2, bounds.size.h - 2));
-  graphics_draw_line(ctx,
-    GPoint(bounds.size.w - 2, 1),
-    GPoint(1, bounds.size.h - 2));
+// Battery
+void update_battery_slot(Slot *battery_slot, int digit_value) {
+  if (battery_slot->state == digit_value)
+    return;
+
+  GRect frame = GRect(
+    battery_slot->number * (BATTERY_IMAGE_WIDTH + MARGIN),
+    0,
+    BATTERY_IMAGE_WIDTH,
+    BATTERY_IMAGE_HEIGHT
+  );
+
+  unload_digit_image_from_slot(battery_slot);
+  load_digit_image_into_slot(battery_slot, digit_value, battery_layer, frame, BATTERY_IMAGE_RESOURCE_IDS);
 }
 
+void display_battery(int percent) {
+  s_battery_percent = percent;
+  if (percent > 99) percent = 99;
+
+  for (int slot_number = 1; slot_number >= 0; slot_number--) {
+    update_battery_slot(&battery_slots[slot_number], percent % 10);
+    percent /= 10;
+  }
+}
+
+void handle_battery_change(BatteryChargeState state) {
+  display_battery(state.charge_percent);
+}
+
+// Connection
 void handle_bt_connection_change(bool connected) {
   if (connected == s_bt_connected) return;
   s_bt_connected = connected;
@@ -553,21 +595,25 @@ void init() {
   date_layer = layer_create(date_layer_frame);
   layer_add_child(footer_layer, date_layer);
 
-  // Bluetooth icon
-  int bt_icon_size = DAY_IMAGE_HEIGHT;
-  GRect bt_icon_frame = GRect(
-    SCREEN_WIDTH - bt_icon_size - 5,
-    footer_height - bt_icon_size - MARGIN,
-    bt_icon_size,
-    bt_icon_size
+  // Battery
+  for (int i = 0; i < NUMBER_OF_BATTERY_SLOTS; i++) {
+    battery_slots[i].number = i;
+    battery_slots[i].state  = EMPTY_SLOT;
+  }
+
+  GRect battery_layer_frame = GRect(
+    SCREEN_WIDTH - (BATTERY_IMAGE_WIDTH + MARGIN + BATTERY_IMAGE_WIDTH) - 5,
+    footer_height - BATTERY_IMAGE_HEIGHT - MARGIN,
+    BATTERY_IMAGE_WIDTH + MARGIN + BATTERY_IMAGE_WIDTH,
+    BATTERY_IMAGE_HEIGHT
   );
-  bt_icon_layer = layer_create(bt_icon_frame);
-  layer_set_update_proc(bt_icon_layer, bt_icon_layer_update_proc);
-  layer_add_child(footer_layer, bt_icon_layer);
+  battery_layer = layer_create(battery_layer_frame);
+  layer_add_child(footer_layer, battery_layer);
 
   // Initial state
   s_bt_connected = connection_service_peek_pebble_app_connection();
   s_quiet_mode = quiet_time_is_active();
+  s_battery_percent = 0;
 
   // Display
   time_t now = time(NULL);
@@ -575,7 +621,9 @@ void init() {
   display_time(tick_time);
   display_day(tick_time);
   display_date(tick_time);
+  display_battery(battery_state_service_peek().charge_percent);
 
+  battery_state_service_subscribe(handle_battery_change);
   connection_service_subscribe((ConnectionHandlers) {
     .pebble_app_connection_handler = handle_bt_connection_change
   });
@@ -605,6 +653,7 @@ void handle_second_tick(struct tm *tick_time, TimeUnits units_changed) {
 }
 
 void deinit() {
+  battery_state_service_unsubscribe();
   connection_service_unsubscribe();
 
   // Time
@@ -626,8 +675,11 @@ void deinit() {
   }
   layer_destroy(date_layer);
 
-  // Bluetooth icon
-  layer_destroy(bt_icon_layer);
+  // Battery
+  for (int i = 0; i < NUMBER_OF_BATTERY_SLOTS; i++) {
+    unload_digit_image_from_slot(&battery_slots[i]);
+  }
+  layer_destroy(battery_layer);
 
   layer_destroy(footer_layer);
 
