@@ -27,10 +27,6 @@
 #define DATE_IMAGE_WIDTH    25
 #define DATE_IMAGE_HEIGHT   25
 
-// Seconds digit images
-#define SECOND_IMAGE_WIDTH  15
-#define SECOND_IMAGE_HEIGHT 15
-
 // Day-of-week label images (scaled 1.5× from original 20×10)
 #define DAY_IMAGE_WIDTH     30
 #define DAY_IMAGE_HEIGHT    15
@@ -55,14 +51,6 @@ const int DATE_IMAGE_RESOURCE_IDS[NUMBER_OF_DATE_IMAGES] = {
   RESOURCE_ID_IMAGE_DATE_1, RESOURCE_ID_IMAGE_DATE_2, RESOURCE_ID_IMAGE_DATE_3,
   RESOURCE_ID_IMAGE_DATE_4, RESOURCE_ID_IMAGE_DATE_5, RESOURCE_ID_IMAGE_DATE_6,
   RESOURCE_ID_IMAGE_DATE_7, RESOURCE_ID_IMAGE_DATE_8, RESOURCE_ID_IMAGE_DATE_9
-};
-
-#define NUMBER_OF_SECOND_IMAGES 10
-const int SECOND_IMAGE_RESOURCE_IDS[NUMBER_OF_SECOND_IMAGES] = {
-  RESOURCE_ID_IMAGE_SECOND_0,
-  RESOURCE_ID_IMAGE_SECOND_1, RESOURCE_ID_IMAGE_SECOND_2, RESOURCE_ID_IMAGE_SECOND_3,
-  RESOURCE_ID_IMAGE_SECOND_4, RESOURCE_ID_IMAGE_SECOND_5, RESOURCE_ID_IMAGE_SECOND_6,
-  RESOURCE_ID_IMAGE_SECOND_7, RESOURCE_ID_IMAGE_SECOND_8, RESOURCE_ID_IMAGE_SECOND_9
 };
 
 #define NUMBER_OF_DAY_IMAGES 7
@@ -115,10 +103,12 @@ static DayItem day_item;
 static Layer *date_layer;
 static Slot date_slots[NUMBER_OF_DATE_SLOTS];
 
-// Seconds
-#define NUMBER_OF_SECOND_SLOTS 2
-static Layer *seconds_layer;
-static Slot second_slots[NUMBER_OF_SECOND_SLOTS];
+// Bluetooth icon
+static Layer *bt_icon_layer;
+
+// State
+static bool s_bt_connected;
+static bool s_quiet_mode;
 
 
 // General
@@ -145,9 +135,14 @@ void display_date(struct tm *tick_time);
 void display_date_value(int value, int part_number);
 void update_date_slot(Slot *date_slot, int digit_value);
 
-// Seconds
-void display_seconds(struct tm *tick_time);
-void update_second_slot(Slot *second_slot, int digit_value);
+// State / Color
+GColor get_fg_color();
+void tint_bitmap(GBitmap *bitmap);
+void refresh_images();
+
+// Bluetooth icon
+void bt_icon_layer_update_proc(Layer *layer, GContext *ctx);
+void handle_bt_connection_change(bool connected);
 
 // Handlers
 int main(void);
@@ -179,6 +174,7 @@ BitmapLayer *load_digit_image_into_slot(Slot *slot, int digit_value, Layer *pare
   slot->state = digit_value;
 
   slot->image = gbitmap_create_with_resource(digit_resource_ids[digit_value]);
+  tint_bitmap(slot->image);
 
   slot->image_layer = bitmap_layer_create(frame);
   bitmap_layer_set_bitmap(slot->image_layer, slot->image);
@@ -359,6 +355,7 @@ void display_day(struct tm *tick_time) {
   unload_day_item();
 
   day_item.image = gbitmap_create_with_resource(DAY_IMAGE_RESOURCE_IDS[tick_time->tm_wday]);
+  tint_bitmap(day_item.image);
 
   day_item.image_layer = bitmap_layer_create(gbitmap_get_bounds(day_item.image));
   bitmap_layer_set_bitmap(day_item.image_layer, day_item.image);
@@ -375,6 +372,8 @@ void unload_day_item() {
   bitmap_layer_destroy(day_item.image_layer);
 
   gbitmap_destroy(day_item.image);
+
+  day_item.loaded = false;
 }
 
 // Date
@@ -419,34 +418,78 @@ void update_date_slot(Slot *date_slot, int digit_value) {
   load_digit_image_into_slot(date_slot, digit_value, date_layer, frame, DATE_IMAGE_RESOURCE_IDS);
 }
 
-// Seconds
-void display_seconds(struct tm *tick_time) {
-  int seconds = tick_time->tm_sec;
+// State / Color
+GColor get_fg_color() {
+  return (s_bt_connected && !s_quiet_mode) ? GColorWhite : GColorMelon;
+}
 
-  seconds = seconds % 100; // Maximum of two digits per row.
-
-  for (int second_slot_number = 1; second_slot_number >= 0; second_slot_number--) {
-    Slot *second_slot = &second_slots[second_slot_number];
-
-    update_second_slot(second_slot, seconds % 10);
-
-    seconds = seconds / 10;
+void tint_bitmap(GBitmap *bitmap) {
+  if (!bitmap) return;
+  GBitmapFormat format = gbitmap_get_format(bitmap);
+  if (format != GBitmapFormat1BitPalette &&
+      format != GBitmapFormat2BitPalette &&
+      format != GBitmapFormat4BitPalette) return;
+  GColor *palette = gbitmap_get_palette(bitmap);
+  if (!palette) return;
+  int palette_size;
+  switch (format) {
+    case GBitmapFormat1BitPalette: palette_size = 2;  break;
+    case GBitmapFormat2BitPalette: palette_size = 4;  break;
+    case GBitmapFormat4BitPalette: palette_size = 16; break;
+    default: return;
+  }
+  GColor target = get_fg_color();
+  for (int i = 0; i < palette_size; i++) {
+    if (gcolor_equal(palette[i], GColorWhite)) {
+      palette[i] = target;
+    }
   }
 }
 
-void update_second_slot(Slot *second_slot, int digit_value) {
-  if (second_slot->state == digit_value)
-    return;
+void refresh_images() {
+  for (int i = 0; i < NUMBER_OF_TIME_SLOTS; i++) {
+    TimeSlot *ts = &time_slots[i];
+    if (ts->slot.state != EMPTY_SLOT && !ts->updating) {
+      int digit = ts->slot.state;
+      unload_digit_image_from_slot(&ts->slot);
+      GRect frame = frame_for_time_slot(ts);
+      load_digit_image_into_slot(&ts->slot, digit, time_layer, frame, TIME_IMAGE_RESOURCE_IDS);
+    }
+  }
+  for (int i = 0; i < NUMBER_OF_DATE_SLOTS; i++) {
+    int digit = date_slots[i].state;
+    if (digit != EMPTY_SLOT) {
+      unload_digit_image_from_slot(&date_slots[i]);
+      update_date_slot(&date_slots[i], digit);
+    }
+  }
+  if (day_item.loaded) {
+    time_t now = time(NULL);
+    display_day(localtime(&now));
+  }
+  if (bt_icon_layer) {
+    layer_mark_dirty(bt_icon_layer);
+  }
+}
 
-  GRect frame = GRect(
-    second_slot->number * (SECOND_IMAGE_WIDTH + MARGIN),
-    0,
-    SECOND_IMAGE_WIDTH,
-    SECOND_IMAGE_HEIGHT
-  );
+// Bluetooth icon
+void bt_icon_layer_update_proc(Layer *layer, GContext *ctx) {
+  if (s_bt_connected) return;
+  GRect bounds = layer_get_bounds(layer);
+  graphics_context_set_stroke_color(ctx, get_fg_color());
+  graphics_context_set_stroke_width(ctx, 2);
+  graphics_draw_line(ctx,
+    GPoint(1, 1),
+    GPoint(bounds.size.w - 2, bounds.size.h - 2));
+  graphics_draw_line(ctx,
+    GPoint(bounds.size.w - 2, 1),
+    GPoint(1, bounds.size.h - 2));
+}
 
-  unload_digit_image_from_slot(second_slot);
-  load_digit_image_into_slot(second_slot, digit_value, seconds_layer, frame, SECOND_IMAGE_RESOURCE_IDS);
+void handle_bt_connection_change(bool connected) {
+  if (connected == s_bt_connected) return;
+  s_bt_connected = connected;
+  refresh_images();
 }
 
 // Handlers
@@ -486,7 +529,7 @@ void init() {
   day_item.loaded = false;
 
   GRect day_layer_frame = GRect(
-    MARGIN,
+    MARGIN + 5,
     footer_height - DAY_IMAGE_HEIGHT - MARGIN,
     DAY_IMAGE_WIDTH,
     DAY_IMAGE_HEIGHT
@@ -510,22 +553,21 @@ void init() {
   date_layer = layer_create(date_layer_frame);
   layer_add_child(footer_layer, date_layer);
 
-  // Seconds
-  for (int i = 0; i < NUMBER_OF_SECOND_SLOTS; i++) {
-    Slot *second_slot = &second_slots[i];
-    second_slot->number = i;
-    second_slot->state  = EMPTY_SLOT;
-  }
-
-  GRect seconds_layer_frame = GRect(
-    SCREEN_WIDTH - SECOND_IMAGE_WIDTH - MARGIN - SECOND_IMAGE_WIDTH - MARGIN,
-    footer_height - SECOND_IMAGE_HEIGHT - MARGIN,
-    SECOND_IMAGE_WIDTH + MARGIN + SECOND_IMAGE_WIDTH,
-    SECOND_IMAGE_HEIGHT
+  // Bluetooth icon
+  int bt_icon_size = DAY_IMAGE_HEIGHT;
+  GRect bt_icon_frame = GRect(
+    SCREEN_WIDTH - bt_icon_size - 5,
+    footer_height - bt_icon_size - MARGIN,
+    bt_icon_size,
+    bt_icon_size
   );
-  seconds_layer = layer_create(seconds_layer_frame);
-  layer_add_child(footer_layer, seconds_layer);
+  bt_icon_layer = layer_create(bt_icon_frame);
+  layer_set_update_proc(bt_icon_layer, bt_icon_layer_update_proc);
+  layer_add_child(footer_layer, bt_icon_layer);
 
+  // Initial state
+  s_bt_connected = connection_service_peek_pebble_app_connection();
+  s_quiet_mode = quiet_time_is_active();
 
   // Display
   time_t now = time(NULL);
@@ -533,16 +575,21 @@ void init() {
   display_time(tick_time);
   display_day(tick_time);
   display_date(tick_time);
-  display_seconds(tick_time);
 
-  tick_timer_service_subscribe(SECOND_UNIT, handle_second_tick);
+  connection_service_subscribe((ConnectionHandlers) {
+    .pebble_app_connection_handler = handle_bt_connection_change
+  });
+
+  tick_timer_service_subscribe(MINUTE_UNIT, handle_second_tick);
 }
 
 void handle_second_tick(struct tm *tick_time, TimeUnits units_changed) {
-  display_seconds(tick_time);
+  display_time(tick_time);
 
-  if ((units_changed & MINUTE_UNIT) == MINUTE_UNIT) {
-    display_time(tick_time);
+  bool new_quiet = quiet_time_is_active();
+  if (new_quiet != s_quiet_mode) {
+    s_quiet_mode = new_quiet;
+    refresh_images();
   }
 
 #if VIBE_ON_HOUR
@@ -558,6 +605,8 @@ void handle_second_tick(struct tm *tick_time, TimeUnits units_changed) {
 }
 
 void deinit() {
+  connection_service_unsubscribe();
+
   // Time
   for (int i = 0; i < NUMBER_OF_TIME_SLOTS; i++) {
     unload_digit_image_from_slot(&time_slots[i].slot);
@@ -577,11 +626,8 @@ void deinit() {
   }
   layer_destroy(date_layer);
 
-  // Seconds
-  for (int i = 0; i < NUMBER_OF_SECOND_SLOTS; i++) {
-    unload_digit_image_from_slot(&second_slots[i]);
-  }
-  layer_destroy(seconds_layer);
+  // Bluetooth icon
+  layer_destroy(bt_icon_layer);
 
   layer_destroy(footer_layer);
 
